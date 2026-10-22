@@ -1,7 +1,8 @@
 /* ============================================================
    app.js — interactions de la galerie SlowSite
    Révélation des vignettes au scroll + nuage de mots-clés.
-   Dépend de js/vendor/ui-kit.min.js (UIKit).
+   JavaScript natif, sans dépendance. Chargé avec "defer" : le DOM
+   est prêt à l'exécution.
    ============================================================ */
 (function () {
   'use strict';
@@ -69,23 +70,26 @@
     'fonds photographique', 'inventaire', 'numérisation', 'conservation'
   ];
 
-  /* Alimente les suggestions du champ de filtrage avec le vocabulaire
-     d'indexation de la photothèque. */
+  /* Alimente les suggestions du champ de filtrage : une seule insertion
+     (fragment) au lieu d'un innerHTML += par entrée. */
   function buildKeywordIndex() {
-    var list = UIKit.qs('#motscles');
+    var list = document.querySelector('#motscles');
     if (!list) return;
 
-    list.innerHTML = '';
+    var frag = document.createDocumentFragment();
     for (var i = 0; i < TAGS.length; i++) {
-      // On ajoute chaque entrée au fur et à mesure pour garder l'ordre.
-      list.innerHTML += '<option value="' + TAGS[i] + '"></option>';
+      var opt = document.createElement('option');
+      opt.value = TAGS[i];
+      frag.appendChild(opt);
     }
+    list.textContent = '';
+    list.appendChild(frag);
   }
 
   /* Construit le calendrier d'activité : 53 semaines de 7 jours, la teinte de
      chaque case reflétant le nombre de prises de vue archivées ce jour-là. */
   function buildActivityCalendar() {
-    var host = UIKit.qs('#calendrier');
+    var host = document.querySelector('#calendrier');
     if (!host) return;
 
     var MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet',
@@ -126,12 +130,12 @@
 
   /* Filtre la galerie sur les mots-clés associés à chaque visuel. */
   function filterGallery() {
-    var champ = UIKit.qs('#q');
-    var info = UIKit.qs('#filter-info');
+    var champ = document.querySelector('#q');
+    var info = document.querySelector('#filter-info');
     if (!champ) return;
 
     var q = champ.value.trim().toLowerCase();
-    var cards = UIKit.qsa('.card');
+    var cards = document.querySelectorAll('.card');
     var visibles = 0;
 
     for (var i = 0; i < cards.length; i++) {
@@ -154,63 +158,78 @@
     }
   }
 
-  /* Aligne la hauteur des cartes et anime leur arrivée dans le viewport. */
+  /* Anime l'arrivée des cartes dans le viewport : IntersectionObserver,
+     calcul fait par le navigateur, une seule fois par carte. L'alignement des
+     hauteurs est assuré par la grille CSS (grid-auto-rows:1fr). */
   function revealCards() {
-    var cards = UIKit.qsa('.card');
-
-    for (var i = 0; i < cards.length; i++) {
-      var rect = cards[i].getBoundingClientRect();
-
-      // Hauteur de la plus grande carte, pour garder une grille régulière.
-      var tallest = 0;
-      var all = UIKit.qsa('.card');
-      for (var j = 0; j < all.length; j++) {
-        if (all[j].offsetHeight > tallest) {
-          tallest = all[j].offsetHeight;
+    var cards = document.querySelectorAll('.card');
+    var i;
+    if (!('IntersectionObserver' in window)) {
+      for (i = 0; i < cards.length; i++) cards[i].classList.add('visible');
+      return;
+    }
+    var io = new IntersectionObserver(function (entries) {
+      for (var j = 0; j < entries.length; j++) {
+        var e = entries[j];
+        if (e.isIntersecting || e.boundingClientRect.top < 0) {
+          e.target.classList.add('visible');
+          io.unobserve(e.target);
         }
       }
-      cards[i].style.minHeight = tallest + 'px';
+    }, { rootMargin: '0px 0px -40px 0px' });
+    for (i = 0; i < cards.length; i++) io.observe(cards[i]);
+  }
 
-      if (rect.top < window.innerHeight - 40) {
-        UIKit.cls(cards[i], 'visible', true);
-        cards[i].style.transform = 'translateY(0px)';
-      } else {
-        cards[i].style.transform = 'translateY(24px)';
+  /* Les cases du calendrier s'estompent selon leur distance au milieu de
+     l'écran. Les 7 cases d'une même ligne ont le même top : on lit 7 positions
+     (toutes les lectures d'abord) puis on écrit 7 variables CSS, au lieu de
+     371 lectures + 371 écritures. Une seule mise à jour par image. */
+  function setupCalendarFade() {
+    var host = document.querySelector('#calendrier');
+    if (!host || host.children.length < 7) return;
+    var ticking = false;
+
+    function update() {
+      ticking = false;
+      var h = window.innerHeight, tops = [], r;
+      for (r = 0; r < 7; r++) tops.push(host.children[r].getBoundingClientRect().top);
+      for (r = 0; r < 7; r++) {
+        var d = Math.abs(tops[r] - h / 2);
+        host.style.setProperty('--o' + r, Math.max(0.15, 1 - d / h).toFixed(3));
       }
     }
-
-    // Les cases du calendrier apparaissent progressivement à l'approche.
-    var jours = UIKit.qsa('.cal-day');
-    for (var k = 0; k < jours.length; k++) {
-      var box = jours[k].getBoundingClientRect();
-      var d = Math.abs(box.top - window.innerHeight / 2);
-      jours[k].style.opacity = Math.max(0.15, 1 - d / window.innerHeight);
+    function schedule() {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(update);
     }
+    update();
+    window.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule);
+    window.addEventListener('load', schedule);
   }
 
   /* Affiche les images une fois chargées. */
   function watchImages() {
-    UIKit.qsa('.card img').forEach(function (img) {
-      if (img.complete) {
-        UIKit.cls(img, 'loaded', true);
-      } else {
-        img.addEventListener('load', function () {
-          UIKit.cls(img, 'loaded', true);
-        });
-      }
-    });
+    var imgs = document.querySelectorAll('.card img');
+    for (var i = 0; i < imgs.length; i++) {
+      (function (img) {
+        if (img.complete) {
+          img.classList.add('loaded');
+        } else {
+          img.addEventListener('load', function () {
+            img.classList.add('loaded');
+          });
+        }
+      })(imgs[i]);
+    }
   }
 
-  UIKit.ready(function () {
-    buildKeywordIndex();
-    buildActivityCalendar();
-    watchImages();
-    revealCards();
-    var champ = UIKit.qs('#q');
-    if (champ) champ.addEventListener('input', filterGallery);
-  });
-
-  window.addEventListener('scroll', revealCards);
-  window.addEventListener('resize', revealCards);
-  window.addEventListener('load', revealCards);
+  buildKeywordIndex();
+  buildActivityCalendar();
+  watchImages();
+  revealCards();
+  setupCalendarFade();
+  var champ = document.querySelector('#q');
+  if (champ) champ.addEventListener('input', filterGallery);
 })();
